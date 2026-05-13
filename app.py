@@ -1,128 +1,202 @@
 import streamlit as st
-import os
 import json
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+import tempfile
+
+# =========================
+# PAGE CONFIG
+# =========================
+st.set_page_config(page_title="AI Mediator", layout="wide")
+
+st.title("⚖️ AI Dispute Resolution Portal")
+st.markdown("---")
+
+# =========================
+# SIDEBAR
+# =========================
+st.sidebar.title("🛠 Admin Panel")
+
+uploaded_tos = st.sidebar.file_uploader(
+    "Store Terms of Service (PDF)",
+    type=["pdf"]
+)
+
+# =========================
+# MAIN UI
+# =========================
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("🛒 Buyer Claim")
+    buyer_claim = st.text_area(
+        "What happened?",
+        height=300
+    )
+
+with col2:
+    st.subheader("🏬 Seller Defense")
+    seller_defense = st.text_area(
+        "What is your response?",
+        height=300
+    )
+
+# =========================
+# IMPORTS
+# =========================
+from langchain_ollama import OllamaLLM, OllamaEmbeddings
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_classic.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 
-# --- Configuration & Styling ---
-st.set_page_config(layout="wide", page_title="AI Dispute Mediator")
-
-# Ensure you have your API Key set in your environment or enter it here
-# os.environ["GOOGLE_API_KEY"] = "YOUR_API_KEY"
-
-# --- Step 3: The RAG Pipeline (Ingestion Logic) ---
+# =========================
+# PDF PROCESSING
+# =========================
 def process_pdf(uploaded_file):
-    """Extracts text from PDF, chunks it, and creates a FAISS vector store."""
-    # Save temp file to disk for PyPDFLoader
-    with open("temp_tos.pdf", "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    
-    loader = PyPDFLoader("temp_tos.pdf")
-    pages = loader.load()
-    
-    # AI/ML Note: 500/50 split is great for maintaining context in legal clauses
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-    docs = text_splitter.split_documents(pages)
-    
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = FAISS.from_documents(docs, embeddings)
-    return vector_store.as_retriever()
 
-# --- Step 4: The Reasoning Engine ---
+    # Save uploaded PDF temporarily
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        temp_path = tmp_file.name
+
+    # Load PDF
+    loader = PyPDFLoader(temp_path)
+    docs = loader.load()
+
+    # Split text
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=150
+    )
+
+    split_docs = splitter.split_documents(docs)
+
+    # Embeddings
+    embeddings = OllamaEmbeddings(model="nomic-embed-text")
+
+    # Vector DB
+    vectorstore = FAISS.from_documents(
+        split_docs,
+        embeddings
+    )
+
+    retriever = vectorstore.as_retriever()
+
+    return retriever
+
+# =========================
+# VERDICT GENERATION
+# =========================
 def generate_verdict(retriever, buyer_text, seller_text):
-    """Executes Chain of Thought reasoning to generate a JSON verdict."""
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0)
-    
+
+    llm = OllamaLLM(
+        model="phi3",
+        temperature=0
+    )
+
     template = """
-    SYSTEM: You are a professional Legal Mediator. Your goal is to resolve disputes based STRICTLY on the provided Terms of Service (ToS).
-    
-    REASONING PROTOCOL:
-    1. IDENTIFY FALLACIES: Scan both claims for logical fallacies (ad hominem, red herrings, emotional manipulation).
-    2. CONSULT POLICY: Retrieve specific clauses from the ToS that apply to the situation.
-    3. NEUTRAL ADJUDICATION: Compare the facts against the policy. Ignore non-contractual pleas.
-    
-    OUTPUT FORMAT: You must return ONLY a JSON object with these keys:
-    {
-        "winner": "Buyer" or "Seller",
-        "policy_reference": "Specific clause or rule found",
-        "reasoning": "Step-by-step breakdown of your decision"
-    }
+You are a professional Legal Mediator.
 
-    CONTEXT (ToS): {context}
-    
-    DISPUTE DETAILS:
-    Buyer Claim: {buyer_claim}
-    Seller Defense: {seller_defense}
-    
-    JSON VERDICT:
-    """
-    
+Use ONLY the provided policy context.
+
+Ignore emotional arguments.
+
+Return ONLY valid JSON.
+
+JSON FORMAT:
+{{
+    "winner": "Buyer or Seller",
+    "policy_reference": "Referenced rule",
+    "reasoning": "Why this side wins"
+}}
+
+Context:
+{context}
+
+Question:
+{question}
+"""
+
     prompt = PromptTemplate(
-        template=template, 
-        input_variables=["context", "buyer_claim", "seller_defense"]
+        template=template,
+        input_variables=["context", "question"]
     )
-    
-    chain = RetrievalQA.from_chain_type(
+
+    qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
-        chain_type="stuff",
         retriever=retriever,
-        chain_type_kwargs={"prompt": prompt}
+        chain_type="stuff",
+        chain_type_kwargs={
+            "prompt": prompt
+        },
+        return_source_documents=False
     )
-    
-    response = chain.invoke({
-        "query": f"Analyze this dispute: Buyer: {buyer_text} vs Seller: {seller_text}",
-        "buyer_claim": buyer_text,
-        "seller_defense": seller_text
+
+    dispute = f"""
+Buyer Claim:
+{buyer_text}
+
+Seller Defense:
+{seller_text}
+"""
+
+    # IMPORTANT FIX
+    result = qa_chain.invoke({
+        "query": dispute
     })
-    
-    return response["result"]
 
-# --- UI Scaffolding ---
-st.sidebar.title("🛠 Admin Panel")
-uploaded_tos = st.sidebar.file_uploader("Store Terms of Service (PDF)", type=["pdf"])
+    return result["result"]
 
-st.title("⚖️ AI Dispute Resolution Portal")
-st.markdown("---")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("🛒 Buyer Claim")
-    buyer_claim = st.text_area("What happened?", height=300, placeholder="Describe your issue...")
-
-with col2:
-    st.subheader("🏬 Seller Defense")
-    seller_defense = st.text_area("What is your response?", height=300, placeholder="Describe your defense...")
-
+# =========================
+# BUTTON
+# =========================
 if st.button("Generate Verdict", use_container_width=True):
+
     if not uploaded_tos:
-        st.warning("Please upload the Terms of Service PDF in the sidebar first.")
+        st.warning("Please upload the Terms of Service PDF.")
     elif not buyer_claim or not seller_defense:
-        st.warning("Both parties must provide a statement.")
+        st.warning("Please fill both Buyer Claim and Seller Defense.")
     else:
-        with st.spinner("Analyzing claims and cross-referencing policy..."):
+
+        raw_result = ""
+
+        with st.spinner("AI is analyzing the dispute..."):
+
             try:
-                # 1. Build/Retrieve Vector Store
                 retriever = process_pdf(uploaded_tos)
-                
-                # 2. Run Reasoning Engine
-                raw_result = generate_verdict(retriever, buyer_claim, seller_defense)
-                
-                # 3. Parse and Display
-                verdict = json.loads(raw_result)
-                
+
+                raw_result = generate_verdict(
+                    retriever,
+                    buyer_claim,
+                    seller_defense
+                )
+
+                # Clean markdown if model adds ```json
+                cleaned = raw_result.replace("```json", "").replace("```", "").strip()
+
+                verdict = json.loads(cleaned)
+
                 st.markdown("---")
-                if verdict['winner'] == "Buyer":
+
+                if verdict["winner"].lower() == "buyer":
                     st.success(f"### Verdict: Favor {verdict['winner']}")
                 else:
                     st.error(f"### Verdict: Favor {verdict['winner']}")
-                
-                st.info(f"**Policy Referenced:** {verdict['policy_reference']}")
-                st.write(f"**Reasoning:** {verdict['reasoning']}")
-                
+
+                st.info(
+                    f"**Policy Reference:** {verdict['policy_reference']}"
+                )
+
+                st.write(
+                    f"**Reasoning:** {verdict['reasoning']}"
+                )
+
+            except json.JSONDecodeError:
+                st.error("Model did not return valid JSON.")
+                st.code(raw_result)
+
             except Exception as e:
-                st.error(f"An error occurred: {e}")
+                st.error(f"Error: {e}")
+
+                if raw_result:
+                    st.code(raw_result)

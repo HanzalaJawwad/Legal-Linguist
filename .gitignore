@@ -1,14 +1,8 @@
-# Python environment
-.venv/
 __pycache__/
-*.py[cod]
-
-# Streamlit/Temp files
-temp_tos.pdf
-.streamlit/
-
-# Local Vector Store
+*.pyc
+.env
+.venv/
+venv/
 faiss_index/
-
-# OS files
-.DS_Store
+temp/
+.streamlit/
