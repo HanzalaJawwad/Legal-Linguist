@@ -175,7 +175,7 @@ Hanzala Jawwad
 - AI/ML Developer
 - Software Engineer
 - UI/UX Designer
-- Hackathon Organizer & Jury Member
+- Hackathon Organizer 
 
 GitHub:
 [HanzalaJawwad GitHub Profile](https://github.com/HanzalaJawwad?utm_source=chatgpt.com)
