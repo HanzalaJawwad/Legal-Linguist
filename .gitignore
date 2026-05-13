@@ -6,3 +6,5 @@ venv/
 faiss_index/
 temp/
 .streamlit/
+temp_tos.pdf
+*.pdf
